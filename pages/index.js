@@ -37,6 +37,67 @@ const getWeekDates = (date) => {
   return { start: monday, end: sunday }
 }
 
+// Confirmation Dialog Component
+const ConfirmDialog = ({ isOpen, title, message, onConfirm, onCancel }) => {
+  if (!isOpen) return null
+  return (
+    <div style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: 'rgba(0,0,0,0.7)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 1000,
+      padding: '20px'
+    }}>
+      <div style={{
+        background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+        borderRadius: '16px',
+        padding: '24px',
+        maxWidth: '400px',
+        width: '100%',
+        border: '1px solid rgba(255,255,255,0.1)'
+      }}>
+        <h3 style={{ margin: '0 0 12px 0', color: '#e94560' }}>{title}</h3>
+        <p style={{ margin: '0 0 24px 0', color: 'rgba(255,255,255,0.7)', lineHeight: 1.5 }}>{message}</p>
+        <div style={{ display: 'flex', gap: '12px', justifyContent: 'flex-end' }}>
+          <button
+            onClick={onCancel}
+            style={{
+              background: 'rgba(255,255,255,0.1)',
+              border: 'none',
+              color: 'rgba(255,255,255,0.7)',
+              padding: '10px 20px',
+              borderRadius: '8px',
+              cursor: 'pointer'
+            }}
+          >
+            Annuleren
+          </button>
+          <button
+            onClick={onConfirm}
+            style={{
+              background: '#e94560',
+              border: 'none',
+              color: 'white',
+              padding: '10px 20px',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: 600
+            }}
+          >
+            Verwijderen
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Home() {
   // Auth state
   const [session, setSession] = useState(null)
@@ -63,14 +124,21 @@ export default function Home() {
   const [manualHours, setManualHours] = useState('')
   const [manualMinutes, setManualMinutes] = useState('')
   const [newClientName, setNewClientName] = useState('')
-  const [newClientRate, setNewClientRate] = useState('')
   const [newProjectName, setNewProjectName] = useState('')
   const [newProjectClient, setNewProjectClient] = useState('')
+  const [newProjectBudget, setNewProjectBudget] = useState('')
+  const [newProjectRate, setNewProjectRate] = useState('')
+  const [newProjectStart, setNewProjectStart] = useState('')
+  const [newProjectEnd, setNewProjectEnd] = useState('')
   const [editingClient, setEditingClient] = useState(null)
+  const [editingProject, setEditingProject] = useState(null)
   const [weekOffset, setWeekOffset] = useState(0)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [teamView, setTeamView] = useState(false)
+  
+  // Confirmation dialog state
+  const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: '', message: '', onConfirm: null })
 
   // Check session on load
   useEffect(() => {
@@ -185,7 +253,11 @@ export default function Home() {
     })
     
     if (error) {
-      setAuthError(error.message)
+      if (error.message.includes('rate limit')) {
+        setAuthError('Te veel aanvragen. Wacht een paar minuten en probeer opnieuw.')
+      } else {
+        setAuthError(error.message)
+      }
     } else {
       setAuthMessage('✨ Check je inbox! We hebben een inloglink gestuurd naar ' + authEmail)
       setAuthEmail('')
@@ -282,66 +354,156 @@ export default function Home() {
     setSaving(false)
   }
 
-  // Client/Project functions
+  // Client functions
   const addClient = async () => {
     if (!newClientName.trim()) return
     setSaving(true)
     await supabase.from('clients').insert({
-      name: newClientName.trim(),
-      hourly_rate: parseFloat(newClientRate) || 0
+      name: newClientName.trim()
     })
     setNewClientName('')
-    setNewClientRate('')
     await loadAllData()
     setSaving(false)
   }
 
-  const updateClient = async (id, name, rate) => {
+  const updateClient = async (id, name) => {
     setSaving(true)
-    await supabase.from('clients').update({
-      name,
-      hourly_rate: parseFloat(rate) || 0
-    }).eq('id', id)
+    await supabase.from('clients').update({ name }).eq('id', id)
     setEditingClient(null)
     await loadAllData()
     setSaving(false)
   }
 
-  const deleteClient = async (id) => {
-    setSaving(true)
-    await supabase.from('clients').delete().eq('id', id)
-    await loadAllData()
-    setSaving(false)
+  const confirmDeleteClient = (client) => {
+    const projectCount = projects.filter(p => p.client_id === client.id).length
+    const entryCount = timeEntries.filter(e => e.client_id === client.id).length
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Klant verwijderen?',
+      message: `Weet je zeker dat je "${client.name}" wilt verwijderen?${projectCount > 0 ? ` Dit verwijdert ook ${projectCount} project(en).` : ''}${entryCount > 0 ? ` Er zijn ${entryCount} uurregistratie(s) gekoppeld.` : ''}`,
+      onConfirm: async () => {
+        setSaving(true)
+        await supabase.from('clients').delete().eq('id', client.id)
+        await loadAllData()
+        setSaving(false)
+        setConfirmDialog({ isOpen: false })
+      }
+    })
   }
 
+  // Project functions
   const addProject = async () => {
     if (!newProjectName.trim() || !newProjectClient) return
+    
+    // Validate dates
+    if (newProjectStart && newProjectEnd && newProjectEnd < newProjectStart) {
+      alert('Einddatum kan niet voor startdatum liggen')
+      return
+    }
+    
     setSaving(true)
     await supabase.from('projects').insert({
       name: newProjectName.trim(),
-      client_id: newProjectClient
+      client_id: newProjectClient,
+      budget_hours: parseFloat(newProjectBudget) || 0,
+      hourly_rate: parseFloat(newProjectRate) || 0,
+      start_date: newProjectStart || null,
+      end_date: newProjectEnd || null
     })
     setNewProjectName('')
     setNewProjectClient('')
+    setNewProjectBudget('')
+    setNewProjectRate('')
+    setNewProjectStart('')
+    setNewProjectEnd('')
     await loadAllData()
     setSaving(false)
   }
 
-  const deleteProject = async (id) => {
+  const updateProject = async (id, data) => {
+    // Validate dates
+    if (data.start_date && data.end_date && data.end_date < data.start_date) {
+      alert('Einddatum kan niet voor startdatum liggen')
+      return
+    }
+    
     setSaving(true)
-    await supabase.from('projects').delete().eq('id', id)
+    await supabase.from('projects').update(data).eq('id', id)
+    setEditingProject(null)
     await loadAllData()
     setSaving(false)
+  }
+
+  const confirmDeleteProject = (project) => {
+    const entryCount = timeEntries.filter(e => e.project_id === project.id).length
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Project verwijderen?',
+      message: `Weet je zeker dat je "${project.name}" wilt verwijderen?${entryCount > 0 ? ` Er zijn ${entryCount} uurregistratie(s) gekoppeld aan dit project.` : ''}`,
+      onConfirm: async () => {
+        setSaving(true)
+        await supabase.from('projects').delete().eq('id', project.id)
+        await loadAllData()
+        setSaving(false)
+        setConfirmDialog({ isOpen: false })
+      }
+    })
+  }
+
+  // User management functions
+  const confirmDeleteUser = (user) => {
+    if (user.id === session.user.id) {
+      alert('Je kunt jezelf niet verwijderen')
+      return
+    }
+    const entryCount = timeEntries.filter(e => e.user_id === user.id).length
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Gebruiker verwijderen?',
+      message: `Weet je zeker dat je "${user.display_name}" wilt verwijderen?${entryCount > 0 ? ` Dit verwijdert ook ${entryCount} uurregistratie(s).` : ''}`,
+      onConfirm: async () => {
+        setSaving(true)
+        // Delete user profile (entries will be orphaned but not deleted)
+        await supabase.from('user_profiles').delete().eq('id', user.id)
+        // Note: We can't delete from auth.users via client, only profile
+        await loadAllData()
+        setSaving(false)
+        setConfirmDialog({ isOpen: false })
+      }
+    })
   }
 
   // Helper functions
   const getClientName = (id) => clients.find(c => c.id === id)?.name || 'Onbekend'
   const getProjectName = (id) => projects.find(p => p.id === id)?.name || 'Geen project'
-  const getClientRate = (id) => clients.find(c => c.id === id)?.hourly_rate || 0
+  const getProject = (id) => projects.find(p => p.id === id)
+  const getProjectRate = (projectId) => {
+    const project = projects.find(p => p.id === projectId)
+    return project?.hourly_rate || 0
+  }
   const getClientProjects = (clientId) => projects.filter(p => p.client_id === clientId)
   const getUserName = (id) => {
     const profile = users.find(u => u.id === id)
     return profile?.display_name || 'Onbekend'
+  }
+
+  // Calculate project hours used
+  const getProjectHoursUsed = (projectId) => {
+    const projectEntries = timeEntries.filter(e => e.project_id === projectId)
+    return projectEntries.reduce((sum, e) => sum + e.seconds, 0) / 3600
+  }
+
+  const getProjectHoursRemaining = (projectId) => {
+    const project = projects.find(p => p.id === projectId)
+    if (!project || !project.budget_hours) return null
+    return project.budget_hours - getProjectHoursUsed(projectId)
+  }
+
+  const getProjectProgress = (projectId) => {
+    const project = projects.find(p => p.id === projectId)
+    if (!project || !project.budget_hours) return null
+    const used = getProjectHoursUsed(projectId)
+    return Math.min(100, (used / project.budget_hours) * 100)
   }
 
   const filteredProjects = selectedClient 
@@ -363,7 +525,7 @@ export default function Home() {
 
   const weekTotalSeconds = weekEntries.reduce((sum, e) => sum + e.seconds, 0)
   const weekTotalEarnings = weekEntries.reduce((sum, e) => {
-    const rate = getClientRate(e.client_id)
+    const rate = getProjectRate(e.project_id)
     return sum + (e.seconds / 3600 * rate)
   }, 0)
 
@@ -371,8 +533,9 @@ export default function Home() {
     const grouped = {}
     entries.forEach(entry => {
       const key = teamView ? entry.user_id : entry.client_id
-      if (!grouped[key]) grouped[key] = { seconds: 0, entries: [] }
+      if (!grouped[key]) grouped[key] = { seconds: 0, entries: [], earnings: 0 }
       grouped[key].seconds += entry.seconds
+      grouped[key].earnings += (entry.seconds / 3600) * getProjectRate(entry.project_id)
       grouped[key].entries.push(entry)
     })
     return grouped
@@ -560,6 +723,15 @@ export default function Home() {
         <title>Urenregistratie</title>
         <meta name="viewport" content="width=device-width, initial-scale=1" />
       </Head>
+      
+      <ConfirmDialog 
+        isOpen={confirmDialog.isOpen}
+        title={confirmDialog.title}
+        message={confirmDialog.message}
+        onConfirm={confirmDialog.onConfirm}
+        onCancel={() => setConfirmDialog({ isOpen: false })}
+      />
+      
       <div className="app">
         <header>
           <div className="header-content">
@@ -585,7 +757,9 @@ export default function Home() {
               { id: 'timer', label: '⏱️ Timer' },
               { id: 'handmatig', label: '✏️ Handmatig' },
               { id: 'overzicht', label: '📊 Overzicht' },
-              { id: 'klanten', label: '👥 Klanten' }
+              { id: 'projecten', label: '📁 Projecten' },
+              { id: 'klanten', label: '👥 Klanten' },
+              { id: 'team', label: '⚙️ Team' }
             ].map(tab => (
               <button
                 key={tab.id}
@@ -640,9 +814,44 @@ export default function Home() {
                     disabled={!!myTimer || !selectedClient}
                   >
                     <option value="">Geen project</option>
-                    {filteredProjects.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
+                    {filteredProjects.map(p => (
+                      <option key={p.id} value={p.id}>
+                        {p.name} {p.budget_hours ? `(${getProjectHoursRemaining(p.id)?.toFixed(1)}u over)` : ''}
+                      </option>
+                    ))}
                   </select>
                 </div>
+                
+                {selectedProject && getProject(selectedProject) && (
+                  <div className="project-info-card">
+                    <div className="project-info-header">
+                      <strong>{getProjectName(selectedProject)}</strong>
+                      <span className="client-tag">{getClientName(selectedClient)}</span>
+                    </div>
+                    {getProject(selectedProject).budget_hours > 0 && (
+                      <div className="budget-bar">
+                        <div className="budget-labels">
+                          <span>{getProjectHoursUsed(selectedProject).toFixed(1)}u gebruikt</span>
+                          <span>{getProjectHoursRemaining(selectedProject)?.toFixed(1)}u over</span>
+                        </div>
+                        <div className="progress-bar">
+                          <div 
+                            className="progress-fill" 
+                            style={{ 
+                              width: `${getProjectProgress(selectedProject)}%`,
+                              background: getProjectProgress(selectedProject) > 90 ? '#e94560' : '#00b894'
+                            }}
+                          ></div>
+                        </div>
+                        <div className="budget-total">Budget: {getProject(selectedProject).budget_hours}u</div>
+                      </div>
+                    )}
+                    {getProject(selectedProject).hourly_rate > 0 && (
+                      <div className="rate-info">Tarief: {formatMoney(getProject(selectedProject).hourly_rate)}/uur</div>
+                    )}
+                  </div>
+                )}
+                
                 <div className="field">
                   <label>Beschrijving</label>
                   <input
@@ -746,7 +955,7 @@ export default function Home() {
                     <div className="group-header">
                       <div>
                         <strong>{teamView ? getUserName(groupId) : getClientName(groupId)}</strong>
-                        <span>{formatHours(groupData.seconds)} uur{!teamView && ` · ${formatMoney(groupData.seconds / 3600 * getClientRate(groupId))}`}</span>
+                        <span>{formatHours(groupData.seconds)} uur · {formatMoney(groupData.earnings)}</span>
                       </div>
                     </div>
                     {groupData.entries.map(entry => (
@@ -778,80 +987,285 @@ export default function Home() {
             </div>
           )}
 
+          {/* Projects View */}
+          {view === 'projecten' && (
+            <div className="view-content">
+              <div className="card">
+                <h3>Nieuw project</h3>
+                <div className="field">
+                  <label>Klant *</label>
+                  <select value={newProjectClient} onChange={(e) => setNewProjectClient(e.target.value)}>
+                    <option value="">Selecteer klant...</option>
+                    {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+                  </select>
+                </div>
+                <div className="field">
+                  <label>Projectnaam *</label>
+                  <input 
+                    type="text" 
+                    value={newProjectName} 
+                    onChange={(e) => setNewProjectName(e.target.value)} 
+                    placeholder="Naam van het project"
+                  />
+                </div>
+                <div className="form-grid">
+                  <div className="field">
+                    <label>Urenbudget</label>
+                    <input 
+                      type="number" 
+                      value={newProjectBudget} 
+                      onChange={(e) => setNewProjectBudget(e.target.value)} 
+                      placeholder="Bijv. 40"
+                      min="0"
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Uurtarief (€)</label>
+                    <input 
+                      type="number" 
+                      value={newProjectRate} 
+                      onChange={(e) => setNewProjectRate(e.target.value)} 
+                      placeholder="Bijv. 85"
+                      min="0"
+                    />
+                  </div>
+                </div>
+                <div className="form-grid">
+                  <div className="field">
+                    <label>Startdatum</label>
+                    <input 
+                      type="date" 
+                      value={newProjectStart} 
+                      onChange={(e) => setNewProjectStart(e.target.value)}
+                    />
+                  </div>
+                  <div className="field">
+                    <label>Einddatum</label>
+                    <input 
+                      type="date" 
+                      value={newProjectEnd} 
+                      onChange={(e) => setNewProjectEnd(e.target.value)}
+                      min={newProjectStart}
+                    />
+                  </div>
+                </div>
+                <button 
+                  onClick={addProject} 
+                  disabled={!newProjectName.trim() || !newProjectClient}
+                  className="primary-btn"
+                >
+                  + Project toevoegen
+                </button>
+              </div>
+
+              {projects.length > 0 ? (
+                <>
+                  <h4 className="section-title">Alle projecten ({projects.length})</h4>
+                  {projects.map(project => {
+                    const hoursUsed = getProjectHoursUsed(project.id)
+                    const hoursRemaining = getProjectHoursRemaining(project.id)
+                    const progress = getProjectProgress(project.id)
+                    
+                    if (editingProject === project.id) {
+                      return (
+                        <div key={project.id} className="project-card editing">
+                          <div className="edit-form">
+                            <div className="field">
+                              <label>Projectnaam</label>
+                              <input type="text" defaultValue={project.name} id={`proj-name-${project.id}`} />
+                            </div>
+                            <div className="form-grid">
+                              <div className="field">
+                                <label>Urenbudget</label>
+                                <input type="number" defaultValue={project.budget_hours} id={`proj-budget-${project.id}`} min="0" />
+                              </div>
+                              <div className="field">
+                                <label>Uurtarief (€)</label>
+                                <input type="number" defaultValue={project.hourly_rate} id={`proj-rate-${project.id}`} min="0" />
+                              </div>
+                            </div>
+                            <div className="form-grid">
+                              <div className="field">
+                                <label>Startdatum</label>
+                                <input type="date" defaultValue={project.start_date} id={`proj-start-${project.id}`} />
+                              </div>
+                              <div className="field">
+                                <label>Einddatum</label>
+                                <input type="date" defaultValue={project.end_date} id={`proj-end-${project.id}`} />
+                              </div>
+                            </div>
+                            <div className="edit-actions">
+                              <button onClick={() => {
+                                updateProject(project.id, {
+                                  name: document.getElementById(`proj-name-${project.id}`).value,
+                                  budget_hours: parseFloat(document.getElementById(`proj-budget-${project.id}`).value) || 0,
+                                  hourly_rate: parseFloat(document.getElementById(`proj-rate-${project.id}`).value) || 0,
+                                  start_date: document.getElementById(`proj-start-${project.id}`).value || null,
+                                  end_date: document.getElementById(`proj-end-${project.id}`).value || null
+                                })
+                              }} className="save">Opslaan</button>
+                              <button onClick={() => setEditingProject(null)} className="cancel">Annuleren</button>
+                            </div>
+                          </div>
+                        </div>
+                      )
+                    }
+                    
+                    return (
+                      <div key={project.id} className="project-card">
+                        <div className="project-header">
+                          <div>
+                            <strong>{project.name}</strong>
+                            <span className="client-badge">{getClientName(project.client_id)}</span>
+                          </div>
+                          <div className="project-actions">
+                            <button onClick={() => setEditingProject(project.id)}>✎</button>
+                            <button onClick={() => confirmDeleteProject(project)} className="delete">×</button>
+                          </div>
+                        </div>
+                        
+                        <div className="project-details">
+                          {project.budget_hours > 0 && (
+                            <div className="budget-section">
+                              <div className="budget-bar">
+                                <div className="budget-labels">
+                                  <span>{hoursUsed.toFixed(1)}u gebruikt</span>
+                                  <span style={{ color: hoursRemaining < 0 ? '#e94560' : '#00b894' }}>
+                                    {hoursRemaining >= 0 ? `${hoursRemaining.toFixed(1)}u over` : `${Math.abs(hoursRemaining).toFixed(1)}u OVER BUDGET`}
+                                  </span>
+                                </div>
+                                <div className="progress-bar">
+                                  <div 
+                                    className="progress-fill" 
+                                    style={{ 
+                                      width: `${Math.min(100, progress)}%`,
+                                      background: progress > 90 ? '#e94560' : '#00b894'
+                                    }}
+                                  ></div>
+                                </div>
+                                <div className="budget-total">Budget: {project.budget_hours}u</div>
+                              </div>
+                            </div>
+                          )}
+                          
+                          <div className="project-meta">
+                            {project.hourly_rate > 0 && (
+                              <span className="meta-item">💰 {formatMoney(project.hourly_rate)}/uur</span>
+                            )}
+                            {project.start_date && (
+                              <span className="meta-item">📅 {new Date(project.start_date).toLocaleDateString('nl-NL')} - {project.end_date ? new Date(project.end_date).toLocaleDateString('nl-NL') : 'Geen einddatum'}</span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </>
+              ) : (
+                <div className="empty">
+                  <span>📁</span>
+                  <p>Nog geen projecten. Voeg hierboven een project toe!</p>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Clients View */}
           {view === 'klanten' && (
             <div className="view-content">
               <div className="card">
-                <h3>Nieuwe klant (gedeeld met team)</h3>
+                <h3>Nieuwe klant</h3>
                 <div className="inline-form">
-                  <input type="text" value={newClientName} onChange={(e) => setNewClientName(e.target.value)} placeholder="Klantnaam" />
-                  <input type="number" value={newClientRate} onChange={(e) => setNewClientRate(e.target.value)} placeholder="€/uur" />
+                  <input 
+                    type="text" 
+                    value={newClientName} 
+                    onChange={(e) => setNewClientName(e.target.value)} 
+                    placeholder="Klantnaam"
+                  />
                   <button onClick={addClient} disabled={!newClientName.trim()}>+</button>
                 </div>
               </div>
 
               {clients.length > 0 ? (
-                clients.map(client => (
-                  <div key={client.id} className="client-card">
-                    {editingClient === client.id ? (
-                      <div className="edit-form">
-                        <input type="text" defaultValue={client.name} id={`name-${client.id}`} />
-                        <input type="number" defaultValue={client.hourly_rate} id={`rate-${client.id}`} placeholder="Uurtarief" />
-                        <div className="edit-actions">
-                          <button onClick={() => {
-                            updateClient(client.id, document.getElementById(`name-${client.id}`).value, document.getElementById(`rate-${client.id}`).value)
-                          }} className="save">Opslaan</button>
-                          <button onClick={() => setEditingClient(null)} className="cancel">Annuleren</button>
+                clients.map(client => {
+                  const clientProjects = getClientProjects(client.id)
+                  
+                  return (
+                    <div key={client.id} className="client-card">
+                      {editingClient === client.id ? (
+                        <div className="edit-form">
+                          <input type="text" defaultValue={client.name} id={`client-name-${client.id}`} />
+                          <div className="edit-actions">
+                            <button onClick={() => {
+                              updateClient(client.id, document.getElementById(`client-name-${client.id}`).value)
+                            }} className="save">Opslaan</button>
+                            <button onClick={() => setEditingClient(null)} className="cancel">Annuleren</button>
+                          </div>
                         </div>
-                      </div>
-                    ) : (
-                      <div className="client-info">
-                        <div>
-                          <strong>{client.name}</strong>
-                          <span>{formatMoney(client.hourly_rate)}/uur · {getClientProjects(client.id).length} project(en)</span>
+                      ) : (
+                        <div className="client-info">
+                          <div>
+                            <strong>{client.name}</strong>
+                            <span>{clientProjects.length} project(en)</span>
+                          </div>
+                          <div className="client-actions">
+                            <button onClick={() => setEditingClient(client.id)}>✎</button>
+                            <button onClick={() => confirmDeleteClient(client)} className="delete">×</button>
+                          </div>
                         </div>
-                        <div className="client-actions">
-                          <button onClick={() => setEditingClient(client.id)}>✎</button>
-                          <button onClick={() => deleteClient(client.id)} className="delete">×</button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                ))
+                      )}
+                    </div>
+                  )
+                })
               ) : (
                 <div className="empty">
                   <span>👥</span>
                   <p>Nog geen klanten toegevoegd</p>
                 </div>
               )}
+            </div>
+          )}
 
-              {clients.length > 0 && (
-                <div className="card">
-                  <h3>Nieuw project</h3>
-                  <div className="inline-form">
-                    <select value={newProjectClient} onChange={(e) => setNewProjectClient(e.target.value)}>
-                      <option value="">Klant...</option>
-                      {clients.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
-                    </select>
-                    <input type="text" value={newProjectName} onChange={(e) => setNewProjectName(e.target.value)} placeholder="Projectnaam" />
-                    <button onClick={addProject} disabled={!newProjectName.trim() || !newProjectClient}>+</button>
-                  </div>
-                </div>
-              )}
+          {/* Team Management View */}
+          {view === 'team' && (
+            <div className="view-content">
+              <div className="card">
+                <h3>Teamleden ({users.length})</h3>
+                <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px', marginBottom: '16px' }}>
+                  Nieuwe teamleden kunnen inloggen door hun e-mailadres in te vullen op de loginpagina.
+                </p>
+              </div>
 
-              {projects.length > 0 && (
-                <>
-                  <h4 className="section-title">Projecten</h4>
-                  {projects.map(project => (
-                    <div key={project.id} className="project-card">
-                      <div>
-                        <strong>{project.name}</strong>
-                        <span>{getClientName(project.client_id)}</span>
+              {users.length > 0 ? (
+                users.map(user => {
+                  const userEntries = timeEntries.filter(e => e.user_id === user.id)
+                  const userHours = userEntries.reduce((sum, e) => sum + e.seconds, 0) / 3600
+                  const isCurrentUser = user.id === session.user.id
+                  
+                  return (
+                    <div key={user.id} className="user-card">
+                      <div className="user-info">
+                        <div>
+                          <strong>
+                            {user.display_name}
+                            {isCurrentUser && <span className="you-badge">Jij</span>}
+                          </strong>
+                          <span>{userHours.toFixed(1)} uur geregistreerd</span>
+                        </div>
+                        {!isCurrentUser && (
+                          <div className="user-actions">
+                            <button onClick={() => confirmDeleteUser(user)} className="delete">×</button>
+                          </div>
+                        )}
                       </div>
-                      <button onClick={() => deleteProject(project.id)} className="delete">×</button>
                     </div>
-                  ))}
-                </>
+                  )
+                })
+              ) : (
+                <div className="empty">
+                  <span>👤</span>
+                  <p>Nog geen teamleden</p>
+                </div>
               )}
             </div>
           )}
@@ -1111,6 +1525,60 @@ export default function Home() {
           cursor: not-allowed;
         }
         
+        .project-info-card {
+          background: rgba(0,184,148,0.1);
+          border: 1px solid rgba(0,184,148,0.3);
+          border-radius: 12px;
+          padding: 16px;
+          margin-bottom: 16px;
+        }
+        .project-info-header {
+          display: flex;
+          align-items: center;
+          gap: 12px;
+          margin-bottom: 12px;
+        }
+        .project-info-header strong {
+          font-size: 16px;
+        }
+        .client-tag, .client-badge {
+          font-size: 11px;
+          background: rgba(100, 100, 255, 0.2);
+          color: #a0a0ff;
+          padding: 3px 10px;
+          border-radius: 12px;
+        }
+        .budget-bar {
+          margin-bottom: 8px;
+        }
+        .budget-labels {
+          display: flex;
+          justify-content: space-between;
+          font-size: 12px;
+          margin-bottom: 6px;
+          color: rgba(255,255,255,0.7);
+        }
+        .progress-bar {
+          height: 8px;
+          background: rgba(255,255,255,0.1);
+          border-radius: 4px;
+          overflow: hidden;
+        }
+        .progress-fill {
+          height: 100%;
+          border-radius: 4px;
+          transition: width 0.3s;
+        }
+        .budget-total {
+          font-size: 11px;
+          color: rgba(255,255,255,0.5);
+          margin-top: 4px;
+        }
+        .rate-info {
+          font-size: 13px;
+          color: rgba(255,255,255,0.6);
+        }
+        
         .no-clients {
           background: rgba(233, 69, 96, 0.1);
           border: 1px solid rgba(233, 69, 96, 0.3);
@@ -1308,25 +1776,47 @@ export default function Home() {
           cursor: not-allowed;
         }
         
-        .client-card, .project-card {
+        .project-card {
           background: rgba(255,255,255,0.05);
           border-radius: 12px;
           border: 1px solid rgba(255,255,255,0.1);
           margin-bottom: 12px;
+          overflow: hidden;
         }
-        .client-info, .project-card {
+        .project-card.editing {
+          border-color: #e94560;
+        }
+        .project-header {
           padding: 16px;
           display: flex;
           justify-content: space-between;
-          align-items: center;
+          align-items: flex-start;
         }
-        .client-info strong, .project-card strong { display: block; font-size: 16px; margin-bottom: 4px; }
-        .client-info span, .project-card span { font-size: 13px; color: rgba(255,255,255,0.5); }
-        .client-actions {
+        .project-header strong {
+          font-size: 16px;
+          display: block;
+          margin-bottom: 4px;
+        }
+        .project-details {
+          padding: 0 16px 16px 16px;
+        }
+        .budget-section {
+          margin-bottom: 12px;
+        }
+        .project-meta {
+          display: flex;
+          gap: 16px;
+          flex-wrap: wrap;
+        }
+        .meta-item {
+          font-size: 13px;
+          color: rgba(255,255,255,0.6);
+        }
+        .project-actions {
           display: flex;
           gap: 8px;
         }
-        .client-actions button, .project-card button {
+        .project-actions button {
           background: rgba(255,255,255,0.1);
           border: none;
           color: rgba(255,255,255,0.7);
@@ -1334,9 +1824,76 @@ export default function Home() {
           border-radius: 6px;
           cursor: pointer;
         }
-        .client-actions .delete, .project-card .delete {
+        .project-actions .delete {
           background: rgba(255,100,100,0.1);
           color: #ff6b6b;
+        }
+        
+        .client-card {
+          background: rgba(255,255,255,0.05);
+          border-radius: 12px;
+          border: 1px solid rgba(255,255,255,0.1);
+          margin-bottom: 12px;
+        }
+        .client-info {
+          padding: 16px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .client-info strong { display: block; font-size: 16px; margin-bottom: 4px; }
+        .client-info span { font-size: 13px; color: rgba(255,255,255,0.5); }
+        .client-actions {
+          display: flex;
+          gap: 8px;
+        }
+        .client-actions button {
+          background: rgba(255,255,255,0.1);
+          border: none;
+          color: rgba(255,255,255,0.7);
+          padding: 8px 12px;
+          border-radius: 6px;
+          cursor: pointer;
+        }
+        .client-actions .delete {
+          background: rgba(255,100,100,0.1);
+          color: #ff6b6b;
+        }
+        
+        .user-card {
+          background: rgba(255,255,255,0.05);
+          border-radius: 12px;
+          border: 1px solid rgba(255,255,255,0.1);
+          margin-bottom: 12px;
+        }
+        .user-info {
+          padding: 16px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .user-info strong { display: block; font-size: 16px; margin-bottom: 4px; }
+        .user-info span { font-size: 13px; color: rgba(255,255,255,0.5); }
+        .you-badge {
+          font-size: 10px;
+          background: #e94560;
+          color: white;
+          padding: 2px 8px;
+          border-radius: 10px;
+          margin-left: 8px;
+          font-weight: normal;
+        }
+        .user-actions {
+          display: flex;
+          gap: 8px;
+        }
+        .user-actions button {
+          background: rgba(255,100,100,0.1);
+          border: none;
+          color: #ff6b6b;
+          padding: 8px 12px;
+          border-radius: 6px;
+          cursor: pointer;
         }
         
         .edit-form {
@@ -1352,6 +1909,10 @@ export default function Home() {
           padding: 10px 14px;
           color: #fff;
           font-size: 15px;
+        }
+        .edit-form input:focus {
+          outline: none;
+          border-color: #e94560;
         }
         .edit-actions {
           display: flex;
@@ -1373,7 +1934,7 @@ export default function Home() {
           color: rgba(255,255,255,0.5);
           text-transform: uppercase;
           letter-spacing: 1px;
-          margin: 24px 0 12px 0;
+          margin: 0 0 12px 0;
         }
         
         .sync-indicator {

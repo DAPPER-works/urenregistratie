@@ -98,6 +98,83 @@ const ConfirmDialog = ({ isOpen, title, message, onConfirm, onCancel }) => {
   )
 }
 
+// Timer Reminder Dialog Component
+const TimerReminderDialog = ({ isOpen, hours, onDismiss, onStop, timerDisplay }) => {
+  if (!isOpen) return null
+  return (
+    <div style={{
+      position: 'fixed',
+      top: 0,
+      left: 0,
+      right: 0,
+      bottom: 0,
+      background: 'rgba(0,0,0,0.7)',
+      display: 'flex',
+      alignItems: 'center',
+      justifyContent: 'center',
+      zIndex: 1000,
+      padding: '20px'
+    }}>
+      <div style={{
+        background: 'linear-gradient(135deg, #1a1a2e 0%, #16213e 100%)',
+        borderRadius: '16px',
+        padding: '24px',
+        maxWidth: '400px',
+        width: '100%',
+        border: '1px solid rgba(233,69,96,0.5)',
+        textAlign: 'center'
+      }}>
+        <div style={{ fontSize: '48px', marginBottom: '16px' }}>⏰</div>
+        <h3 style={{ margin: '0 0 8px 0', color: '#e94560', fontSize: '20px' }}>
+          Timer loopt al {hours} uur!
+        </h3>
+        <p style={{ 
+          fontFamily: 'Courier New, monospace', 
+          fontSize: '32px', 
+          color: '#e94560',
+          margin: '16px 0'
+        }}>
+          {timerDisplay}
+        </p>
+        <p style={{ margin: '0 0 24px 0', color: 'rgba(255,255,255,0.7)', lineHeight: 1.5 }}>
+          Ben je nog steeds aan het werk? Of ben je vergeten de timer te stoppen?
+        </p>
+        <div style={{ display: 'flex', gap: '12px', justifyContent: 'center', flexWrap: 'wrap' }}>
+          <button
+            onClick={onDismiss}
+            style={{
+              background: 'rgba(255,255,255,0.1)',
+              border: 'none',
+              color: 'rgba(255,255,255,0.7)',
+              padding: '12px 24px',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontSize: '14px'
+            }}
+          >
+            Ik werk nog door
+          </button>
+          <button
+            onClick={onStop}
+            style={{
+              background: '#00b894',
+              border: 'none',
+              color: 'white',
+              padding: '12px 24px',
+              borderRadius: '8px',
+              cursor: 'pointer',
+              fontWeight: 600,
+              fontSize: '14px'
+            }}
+          >
+            Timer stoppen
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 export default function Home() {
   // Auth state
   const [session, setSession] = useState(null)
@@ -139,6 +216,10 @@ export default function Home() {
   
   // Confirmation dialog state
   const [confirmDialog, setConfirmDialog] = useState({ isOpen: false, title: '', message: '', onConfirm: null })
+  
+  // Timer reminder state
+  const [timerReminder, setTimerReminder] = useState({ isOpen: false, hours: 0 })
+  const [lastPingTime, setLastPingTime] = useState(0)
 
   // Check session on load
   useEffect(() => {
@@ -220,6 +301,65 @@ export default function Home() {
     }
     return () => clearInterval(interval)
   }, [session, activeTimers])
+
+  // Update page title with timer
+  useEffect(() => {
+    if (myTimer && timerSeconds > 0) {
+      const project = projects.find(p => p.id === selectedProject)
+      const projectName = project?.name || 'Timer'
+      document.title = `⏱️ ${formatDuration(timerSeconds)} - ${projectName}`
+    } else {
+      document.title = 'Urenregistratie'
+    }
+  }, [timerSeconds, myTimer, selectedProject, projects])
+
+  // Play ping sound every 30 minutes
+  const playPing = useCallback(() => {
+    try {
+      const audioContext = new (window.AudioContext || window.webkitAudioContext)()
+      const oscillator = audioContext.createOscillator()
+      const gainNode = audioContext.createGain()
+      
+      oscillator.connect(gainNode)
+      gainNode.connect(audioContext.destination)
+      
+      oscillator.frequency.value = 800
+      oscillator.type = 'sine'
+      gainNode.gain.setValueAtTime(0.3, audioContext.currentTime)
+      gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5)
+      
+      oscillator.start(audioContext.currentTime)
+      oscillator.stop(audioContext.currentTime + 0.5)
+    } catch (e) {
+      console.log('Audio not supported')
+    }
+  }, [])
+
+  // Timer reminders: ping every 30 min, popup after 2 hours
+  useEffect(() => {
+    if (!myTimer || timerSeconds === 0) {
+      setLastPingTime(0)
+      return
+    }
+    
+    const minutes = Math.floor(timerSeconds / 60)
+    const hours = timerSeconds / 3600
+    
+    // Ping every 30 minutes
+    const pingInterval = Math.floor(minutes / 30)
+    if (pingInterval > 0 && pingInterval !== lastPingTime) {
+      playPing()
+      setLastPingTime(pingInterval)
+    }
+    
+    // Popup after 2 hours (and every hour after that)
+    if (hours >= 2 && !timerReminder.isOpen) {
+      const reminderHours = Math.floor(hours)
+      if (reminderHours > (timerReminder.hours || 0)) {
+        setTimerReminder({ isOpen: true, hours: reminderHours })
+      }
+    }
+  }, [timerSeconds, myTimer, lastPingTime, playPing, timerReminder])
 
   useEffect(() => {
     if (session && activeTimers[session.user.id]) {
@@ -310,6 +450,8 @@ export default function Home() {
     
     setTimerSeconds(0)
     setDescription('')
+    setTimerReminder({ isOpen: false, hours: 0 })
+    setLastPingTime(0)
     await loadAllData()
     setSaving(false)
   }
@@ -319,6 +461,8 @@ export default function Home() {
     setSaving(true)
     await supabase.from('active_timers').delete().eq('user_id', session.user.id)
     setTimerSeconds(0)
+    setTimerReminder({ isOpen: false, hours: 0 })
+    setLastPingTime(0)
     await loadAllData()
     setSaving(false)
   }
@@ -730,6 +874,17 @@ export default function Home() {
         message={confirmDialog.message}
         onConfirm={confirmDialog.onConfirm}
         onCancel={() => setConfirmDialog({ isOpen: false })}
+      />
+      
+      <TimerReminderDialog
+        isOpen={timerReminder.isOpen}
+        hours={timerReminder.hours}
+        timerDisplay={formatDuration(timerSeconds)}
+        onDismiss={() => setTimerReminder({ ...timerReminder, isOpen: false })}
+        onStop={async () => {
+          setTimerReminder({ isOpen: false, hours: 0 })
+          await stopTimer()
+        }}
       />
       
       <div className="app">

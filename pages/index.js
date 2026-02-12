@@ -37,30 +37,21 @@ const getWeekDates = (date) => {
   return { start: monday, end: sunday }
 }
 
-const hashPassword = (password) => {
-  let hash = 0
-  for (let i = 0; i < password.length; i++) {
-    const char = password.charCodeAt(i)
-    hash = ((hash << 5) - hash) + char
-    hash = hash & hash
-  }
-  return hash.toString(36)
-}
-
 export default function Home() {
   // Auth state
-  const [currentUser, setCurrentUser] = useState(null)
-  const [users, setUsers] = useState([])
-  const [loginMode, setLoginMode] = useState('login')
-  const [loginUsername, setLoginUsername] = useState('')
-  const [loginPassword, setLoginPassword] = useState('')
-  const [loginError, setLoginError] = useState('')
+  const [session, setSession] = useState(null)
+  const [authEmail, setAuthEmail] = useState('')
+  const [authError, setAuthError] = useState('')
+  const [authMessage, setAuthMessage] = useState('')
+  const [authLoading, setAuthLoading] = useState(false)
   
   // App state
+  const [users, setUsers] = useState([])
   const [clients, setClients] = useState([])
   const [projects, setProjects] = useState([])
   const [timeEntries, setTimeEntries] = useState([])
   const [activeTimers, setActiveTimers] = useState({})
+  const [userProfile, setUserProfile] = useState(null)
   
   // UI state
   const [view, setView] = useState('timer')
@@ -81,153 +72,145 @@ export default function Home() {
   const [saving, setSaving] = useState(false)
   const [teamView, setTeamView] = useState(false)
 
-  // Load all data
+  // Check session on load
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session)
+      setLoading(false)
+    })
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setSession(session)
+    })
+
+    return () => subscription.unsubscribe()
+  }, [])
+
+  // Load user profile
+  const loadUserProfile = useCallback(async (userId) => {
+    const { data } = await supabase
+      .from('user_profiles')
+      .select('*')
+      .eq('id', userId)
+      .single()
+    
+    if (data) {
+      setUserProfile(data)
+    }
+  }, [])
+
+  // Load all data when session exists
   const loadAllData = useCallback(async () => {
+    if (!session) return
+    
     try {
-      const [usersRes, clientsRes, projectsRes, entriesRes, timersRes] = await Promise.all([
-        supabase.from('users').select('*'),
+      const [profilesRes, clientsRes, projectsRes, entriesRes, timersRes] = await Promise.all([
+        supabase.from('user_profiles').select('*'),
         supabase.from('clients').select('*'),
         supabase.from('projects').select('*'),
         supabase.from('time_entries').select('*'),
         supabase.from('active_timers').select('*')
       ])
       
-      setUsers(usersRes.data || [])
+      setUsers(profilesRes.data || [])
       setClients(clientsRes.data || [])
       setProjects(projectsRes.data || [])
       setTimeEntries(entriesRes.data || [])
       
-      // Convert timers array to object keyed by user_id
       const timersObj = {}
       ;(timersRes.data || []).forEach(t => {
         timersObj[t.user_id] = t
       })
       setActiveTimers(timersObj)
-      
-      // Check session
-      const sessionUserId = localStorage.getItem('uren-session')
-      if (sessionUserId && usersRes.data) {
-        const user = usersRes.data.find(u => u.id === sessionUserId)
-        if (user) setCurrentUser(user)
-      }
     } catch (error) {
       console.error('Error loading data:', error)
     }
-    setLoading(false)
-  }, [])
+  }, [session])
 
   useEffect(() => {
-    loadAllData()
-  }, [loadAllData])
+    if (session) {
+      loadAllData()
+      loadUserProfile(session.user.id)
+    }
+  }, [session, loadAllData, loadUserProfile])
 
   // Auto-refresh
   useEffect(() => {
+    if (!session) return
     const interval = setInterval(loadAllData, 30000)
     return () => clearInterval(interval)
-  }, [loadAllData])
+  }, [session, loadAllData])
 
   // Timer tick
   useEffect(() => {
     let interval
-    if (currentUser && activeTimers[currentUser.id]) {
+    if (session && activeTimers[session.user.id]) {
       interval = setInterval(() => {
-        const elapsed = Math.floor((Date.now() - activeTimers[currentUser.id].start_time) / 1000)
+        const elapsed = Math.floor((Date.now() - activeTimers[session.user.id].start_time) / 1000)
         setTimerSeconds(elapsed)
       }, 1000)
     }
     return () => clearInterval(interval)
-  }, [currentUser, activeTimers])
+  }, [session, activeTimers])
 
   useEffect(() => {
-    if (currentUser && activeTimers[currentUser.id]) {
-      const elapsed = Math.floor((Date.now() - activeTimers[currentUser.id].start_time) / 1000)
+    if (session && activeTimers[session.user.id]) {
+      const elapsed = Math.floor((Date.now() - activeTimers[session.user.id].start_time) / 1000)
       setTimerSeconds(elapsed)
-      setSelectedClient(activeTimers[currentUser.id].client_id || '')
-      setSelectedProject(activeTimers[currentUser.id].project_id || '')
-      setDescription(activeTimers[currentUser.id].description || '')
+      setSelectedClient(activeTimers[session.user.id].client_id || '')
+      setSelectedProject(activeTimers[session.user.id].project_id || '')
+      setDescription(activeTimers[session.user.id].description || '')
     } else {
       setTimerSeconds(0)
     }
-  }, [currentUser, activeTimers])
+  }, [session, activeTimers])
 
-  // Auth functions
-  const handleRegister = async () => {
-    setLoginError('')
-    if (!loginUsername.trim() || !loginPassword.trim()) {
-      setLoginError('Vul gebruikersnaam en wachtwoord in')
-      return
-    }
-    if (loginPassword.length < 4) {
-      setLoginError('Wachtwoord moet minimaal 4 tekens zijn')
-      return
-    }
+  // Magic Link login
+  const handleMagicLink = async () => {
+    setAuthError('')
+    setAuthMessage('')
+    setAuthLoading(true)
     
-    const { data: existing } = await supabase
-      .from('users')
-      .select('id')
-      .ilike('username', loginUsername)
-      .single()
-    
-    if (existing) {
-      setLoginError('Deze gebruikersnaam bestaat al')
+    if (!authEmail) {
+      setAuthError('Vul je e-mailadres in')
+      setAuthLoading(false)
       return
     }
     
-    const { data: newUser, error } = await supabase
-      .from('users')
-      .insert({ username: loginUsername.trim(), password_hash: hashPassword(loginPassword) })
-      .select()
-      .single()
+    const { error } = await supabase.auth.signInWithOtp({
+      email: authEmail,
+      options: {
+        emailRedirectTo: window.location.origin
+      }
+    })
     
     if (error) {
-      setLoginError('Er ging iets mis, probeer opnieuw')
-      return
+      setAuthError(error.message)
+    } else {
+      setAuthMessage('✨ Check je inbox! We hebben een inloglink gestuurd naar ' + authEmail)
+      setAuthEmail('')
     }
     
-    setCurrentUser(newUser)
-    localStorage.setItem('uren-session', newUser.id)
-    setLoginUsername('')
-    setLoginPassword('')
-    loadAllData()
+    setAuthLoading(false)
   }
 
-  const handleLogin = async () => {
-    setLoginError('')
-    
-    const { data: user } = await supabase
-      .from('users')
-      .select('*')
-      .ilike('username', loginUsername)
-      .eq('password_hash', hashPassword(loginPassword))
-      .single()
-    
-    if (!user) {
-      setLoginError('Onjuiste gebruikersnaam of wachtwoord')
-      return
-    }
-    
-    setCurrentUser(user)
-    localStorage.setItem('uren-session', user.id)
-    setLoginUsername('')
-    setLoginPassword('')
-  }
-
-  const handleLogout = () => {
-    setCurrentUser(null)
-    localStorage.removeItem('uren-session')
+  const handleSignOut = async () => {
+    await supabase.auth.signOut()
+    setSession(null)
+    setUserProfile(null)
     setView('timer')
     setTeamView(false)
   }
 
   // Timer functions
-  const myTimer = currentUser ? activeTimers[currentUser.id] : null
+  const myTimer = session ? activeTimers[session.user.id] : null
 
   const startTimer = async () => {
-    if (!currentUser) return
+    if (!session) return
     setSaving(true)
     
     await supabase.from('active_timers').upsert({
-      user_id: currentUser.id,
+      user_id: session.user.id,
       client_id: selectedClient || null,
       project_id: selectedProject || null,
       description: description,
@@ -239,11 +222,11 @@ export default function Home() {
   }
 
   const stopTimer = async () => {
-    if (!currentUser || !myTimer || timerSeconds < 60) return
+    if (!session || !myTimer || timerSeconds < 60) return
     setSaving(true)
     
     await supabase.from('time_entries').insert({
-      user_id: currentUser.id,
+      user_id: session.user.id,
       client_id: myTimer.client_id,
       project_id: myTimer.project_id,
       description: myTimer.description,
@@ -251,7 +234,7 @@ export default function Home() {
       date: new Date(myTimer.start_time).toISOString().split('T')[0]
     })
     
-    await supabase.from('active_timers').delete().eq('user_id', currentUser.id)
+    await supabase.from('active_timers').delete().eq('user_id', session.user.id)
     
     setTimerSeconds(0)
     setDescription('')
@@ -260,16 +243,16 @@ export default function Home() {
   }
 
   const cancelTimer = async () => {
-    if (!currentUser) return
+    if (!session) return
     setSaving(true)
-    await supabase.from('active_timers').delete().eq('user_id', currentUser.id)
+    await supabase.from('active_timers').delete().eq('user_id', session.user.id)
     setTimerSeconds(0)
     await loadAllData()
     setSaving(false)
   }
 
   const addManualEntry = async () => {
-    if (!currentUser) return
+    if (!session) return
     const hours = parseFloat(manualHours) || 0
     const minutes = parseFloat(manualMinutes) || 0
     const totalSeconds = (hours * 3600) + (minutes * 60)
@@ -277,7 +260,7 @@ export default function Home() {
     
     setSaving(true)
     await supabase.from('time_entries').insert({
-      user_id: currentUser.id,
+      user_id: session.user.id,
       client_id: selectedClient || null,
       project_id: selectedProject || null,
       description: description,
@@ -356,7 +339,10 @@ export default function Home() {
   const getProjectName = (id) => projects.find(p => p.id === id)?.name || 'Geen project'
   const getClientRate = (id) => clients.find(c => c.id === id)?.hourly_rate || 0
   const getClientProjects = (clientId) => projects.filter(p => p.client_id === clientId)
-  const getUserName = (id) => users.find(u => u.id === id)?.username || 'Onbekend'
+  const getUserName = (id) => {
+    const profile = users.find(u => u.id === id)
+    return profile?.display_name || 'Onbekend'
+  }
 
   const filteredProjects = selectedClient 
     ? projects.filter(p => p.client_id === selectedClient)
@@ -372,7 +358,7 @@ export default function Home() {
     const entryDate = new Date(entry.date)
     const inWeek = entryDate >= weekStart && entryDate <= weekEnd
     if (teamView) return inWeek
-    return inWeek && entry.user_id === currentUser?.id
+    return inWeek && entry.user_id === session?.user?.id
   })
 
   const weekTotalSeconds = weekEntries.reduce((sum, e) => sum + e.seconds, 0)
@@ -393,6 +379,8 @@ export default function Home() {
   }
 
   const entriesGrouped = groupEntries(weekEntries)
+
+  const displayName = userProfile?.display_name || session?.user?.email?.split('@')[0] || 'Gebruiker'
 
   if (loading) {
     return (
@@ -425,8 +413,8 @@ export default function Home() {
     )
   }
 
-  // Login Screen
-  if (!currentUser) {
+  // Login Screen with Magic Link
+  if (!session) {
     return (
       <>
         <Head>
@@ -438,50 +426,31 @@ export default function Home() {
             <h1>Urenregistratie</h1>
             <p className="subtitle">Team Edition ✨</p>
             
-            <div className="tabs">
-              <button 
-                className={loginMode === 'login' ? 'active' : ''} 
-                onClick={() => { setLoginMode('login'); setLoginError(''); }}
-              >
-                Inloggen
-              </button>
-              <button 
-                className={loginMode === 'register' ? 'active' : ''} 
-                onClick={() => { setLoginMode('register'); setLoginError(''); }}
-              >
-                Registreren
-              </button>
-            </div>
-            
             <div className="form">
-              <label>Gebruikersnaam</label>
+              <label>E-mailadres</label>
               <input
-                type="text"
-                value={loginUsername}
-                onChange={(e) => setLoginUsername(e.target.value)}
-                placeholder="Jouw naam"
-                onKeyPress={(e) => e.key === 'Enter' && (loginMode === 'login' ? handleLogin() : handleRegister())}
+                type="email"
+                value={authEmail}
+                onChange={(e) => setAuthEmail(e.target.value)}
+                placeholder="naam@bedrijf.nl"
+                onKeyPress={(e) => e.key === 'Enter' && handleMagicLink()}
               />
               
-              <label>Wachtwoord</label>
-              <input
-                type="password"
-                value={loginPassword}
-                onChange={(e) => setLoginPassword(e.target.value)}
-                placeholder="••••••••"
-                onKeyPress={(e) => e.key === 'Enter' && (loginMode === 'login' ? handleLogin() : handleRegister())}
-              />
+              {authError && <div className="error">{authError}</div>}
+              {authMessage && <div className="success">{authMessage}</div>}
               
-              {loginError && <div className="error">{loginError}</div>}
-              
-              <button className="submit" onClick={loginMode === 'login' ? handleLogin : handleRegister}>
-                {loginMode === 'login' ? 'Inloggen' : 'Account aanmaken'}
+              <button 
+                className="submit" 
+                onClick={handleMagicLink}
+                disabled={authLoading}
+              >
+                {authLoading ? 'Even geduld...' : '✉️ Stuur inloglink'}
               </button>
+              
+              <p className="hint">
+                Je ontvangt een e-mail met een link waarmee je direct inlogt. Geen wachtwoord nodig!
+              </p>
             </div>
-            
-            {users.length > 0 && (
-              <p className="users-count">👥 {users.length} teamlid{users.length !== 1 ? 'en' : ''} geregistreerd</p>
-            )}
           </div>
         </div>
         <style jsx>{`
@@ -514,29 +483,6 @@ export default function Home() {
             color: rgba(255,255,255,0.5);
             text-align: center;
             margin: 0 0 32px 0;
-          }
-          .tabs {
-            display: flex;
-            gap: 8px;
-            background: rgba(0,0,0,0.2);
-            border-radius: 10px;
-            padding: 4px;
-            margin-bottom: 24px;
-          }
-          .tabs button {
-            flex: 1;
-            background: transparent;
-            border: none;
-            color: rgba(255,255,255,0.5);
-            padding: 10px;
-            border-radius: 8px;
-            cursor: pointer;
-            font-weight: 500;
-            transition: all 0.2s;
-          }
-          .tabs button.active {
-            background: #e94560;
-            color: white;
           }
           .form {
             display: flex;
@@ -571,6 +517,15 @@ export default function Home() {
             font-size: 14px;
             text-align: center;
           }
+          .success {
+            background: rgba(0,184,148,0.1);
+            border: 1px solid rgba(0,184,148,0.3);
+            border-radius: 8px;
+            padding: 12px;
+            color: #00b894;
+            font-size: 14px;
+            text-align: center;
+          }
           .submit {
             background: linear-gradient(135deg, #e94560 0%, #ff6b6b 100%);
             border: none;
@@ -582,13 +537,16 @@ export default function Home() {
             cursor: pointer;
             margin-top: 8px;
           }
-          .users-count {
+          .submit:disabled {
+            opacity: 0.7;
+            cursor: not-allowed;
+          }
+          .hint {
             color: rgba(255,255,255,0.4);
-            font-size: 12px;
+            font-size: 13px;
             text-align: center;
-            margin-top: 24px;
-            padding-top: 24px;
-            border-top: 1px solid rgba(255,255,255,0.1);
+            margin-top: 8px;
+            line-height: 1.5;
           }
         `}</style>
       </>
@@ -607,7 +565,7 @@ export default function Home() {
           <div className="header-content">
             <div>
               <h1>Urenregistratie {saving && <span className="saving">opslaan...</span>}</h1>
-              <p>Welkom, <strong>{currentUser.username}</strong></p>
+              <p>Welkom, <strong>{displayName}</strong></p>
             </div>
             <div className="header-right">
               {myTimer && (
@@ -616,7 +574,7 @@ export default function Home() {
                   <span className="time">{formatDuration(timerSeconds)}</span>
                 </div>
               )}
-              <button onClick={handleLogout} className="logout">Uitloggen</button>
+              <button onClick={handleSignOut} className="logout">Uitloggen</button>
             </div>
           </div>
         </header>
@@ -803,7 +761,7 @@ export default function Home() {
                         </div>
                         <div className="entry-actions">
                           <span className="hours">{formatHours(entry.seconds)}u</span>
-                          {entry.user_id === currentUser.id && (
+                          {entry.user_id === session.user.id && (
                             <button onClick={() => deleteEntry(entry.id)} className="delete">×</button>
                           )}
                         </div>

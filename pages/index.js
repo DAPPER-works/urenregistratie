@@ -220,6 +220,12 @@ export default function Home() {
   // Timer reminder state
   const [timerReminder, setTimerReminder] = useState({ isOpen: false, hours: 0 })
   const [lastPingTime, setLastPingTime] = useState(0)
+  
+  // Invite state
+  const [invitedEmails, setInvitedEmails] = useState([])
+  const [newInviteEmail, setNewInviteEmail] = useState('')
+  const [inviteError, setInviteError] = useState('')
+  const [inviteSuccess, setInviteSuccess] = useState('')
 
   // Check session on load
   useEffect(() => {
@@ -253,18 +259,20 @@ export default function Home() {
     if (!session) return
     
     try {
-      const [profilesRes, clientsRes, projectsRes, entriesRes, timersRes] = await Promise.all([
+      const [profilesRes, clientsRes, projectsRes, entriesRes, timersRes, invitesRes] = await Promise.all([
         supabase.from('user_profiles').select('*'),
         supabase.from('clients').select('*'),
         supabase.from('projects').select('*'),
         supabase.from('time_entries').select('*'),
-        supabase.from('active_timers').select('*')
+        supabase.from('active_timers').select('*'),
+        supabase.from('invited_emails').select('*')
       ])
       
       setUsers(profilesRes.data || [])
       setClients(clientsRes.data || [])
       setProjects(projectsRes.data || [])
       setTimeEntries(entriesRes.data || [])
+      setInvitedEmails(invitesRes.data || [])
       
       const timersObj = {}
       ;(timersRes.data || []).forEach(t => {
@@ -380,7 +388,7 @@ export default function Home() {
     }
   }, [session, activeTimers])
 
-  // Magic Link login
+  // Magic Link login - met invite check
   const handleMagicLink = async () => {
     setAuthError('')
     setAuthMessage('')
@@ -388,6 +396,19 @@ export default function Home() {
     
     if (!authEmail) {
       setAuthError('Vul je e-mailadres in')
+      setAuthLoading(false)
+      return
+    }
+    
+    // Check of e-mail is uitgenodigd
+    const { data: inviteData, error: inviteError } = await supabase
+      .from('invited_emails')
+      .select('email')
+      .eq('email', authEmail.toLowerCase())
+      .single()
+    
+    if (inviteError || !inviteData) {
+      setAuthError('Je bent niet uitgenodigd. Vraag een teamlid om je uit te nodigen.')
       setAuthLoading(false)
       return
     }
@@ -616,6 +637,67 @@ export default function Home() {
         // Delete user profile (entries will be orphaned but not deleted)
         await supabase.from('user_profiles').delete().eq('id', user.id)
         // Note: We can't delete from auth.users via client, only profile
+        await loadAllData()
+        setSaving(false)
+        setConfirmDialog({ isOpen: false })
+      }
+    })
+  }
+
+  // Invite functions
+  const handleInvite = async () => {
+    setInviteError('')
+    setInviteSuccess('')
+    
+    const email = newInviteEmail.trim().toLowerCase()
+    
+    if (!email) {
+      setInviteError('Vul een e-mailadres in')
+      return
+    }
+    
+    // Simple email validation
+    if (!email.includes('@') || !email.includes('.')) {
+      setInviteError('Vul een geldig e-mailadres in')
+      return
+    }
+    
+    // Check of al uitgenodigd
+    if (invitedEmails.some(i => i.email === email)) {
+      setInviteError('Dit e-mailadres is al uitgenodigd')
+      return
+    }
+    
+    setSaving(true)
+    const { error } = await supabase.from('invited_emails').insert({
+      email: email,
+      invited_by: session.user.id
+    })
+    
+    if (error) {
+      setInviteError('Kon uitnodiging niet versturen: ' + error.message)
+    } else {
+      setInviteSuccess(`${email} is uitgenodigd! Ze kunnen nu inloggen.`)
+      setNewInviteEmail('')
+      await loadAllData()
+    }
+    setSaving(false)
+  }
+
+  const confirmDeleteInvite = (invite) => {
+    // Check of het je eigen e-mail is
+    if (invite.email === session.user.email) {
+      alert('Je kunt je eigen uitnodiging niet verwijderen')
+      return
+    }
+    
+    setConfirmDialog({
+      isOpen: true,
+      title: 'Uitnodiging intrekken?',
+      message: `Weet je zeker dat je de uitnodiging voor "${invite.email}" wilt intrekken? Deze persoon kan dan niet meer inloggen.`,
+      onConfirm: async () => {
+        setSaving(true)
+        await supabase.from('invited_emails').delete().eq('id', invite.id)
         await loadAllData()
         setSaving(false)
         setConfirmDialog({ isOpen: false })
@@ -1391,12 +1473,56 @@ export default function Home() {
           {view === 'team' && (
             <div className="view-content">
               <div className="card">
-                <h3>Teamleden ({users.length})</h3>
+                <h3>🎫 Teamlid uitnodigen</h3>
                 <p style={{ color: 'rgba(255,255,255,0.5)', fontSize: '14px', marginBottom: '16px' }}>
-                  Nieuwe teamleden kunnen inloggen door hun e-mailadres in te vullen op de loginpagina.
+                  Alleen uitgenodigde e-mailadressen kunnen inloggen.
                 </p>
+                <div className="inline-form">
+                  <input 
+                    type="email" 
+                    value={newInviteEmail} 
+                    onChange={(e) => setNewInviteEmail(e.target.value)} 
+                    placeholder="email@voorbeeld.nl"
+                    onKeyPress={(e) => e.key === 'Enter' && handleInvite()}
+                  />
+                  <button onClick={handleInvite} disabled={!newInviteEmail.trim()}>Uitnodigen</button>
+                </div>
+                {inviteError && <div className="error-msg">{inviteError}</div>}
+                {inviteSuccess && <div className="success-msg">{inviteSuccess}</div>}
               </div>
 
+              <h4 className="section-title">Uitgenodigde e-mails ({invitedEmails.length})</h4>
+              {invitedEmails.length > 0 ? (
+                invitedEmails.map(invite => {
+                  const hasAccount = users.some(u => u.id && invitedEmails.find(i => i.email === invite.email))
+                  const userWithEmail = users.find(u => {
+                    // Check if this invite email matches a user
+                    return invite.email === session?.user?.email || 
+                           users.some(user => user.id === invite.invited_by)
+                  })
+                  
+                  return (
+                    <div key={invite.id} className="invite-card">
+                      <div className="invite-info">
+                        <div>
+                          <strong>{invite.email}</strong>
+                          <span>
+                            Uitgenodigd op {new Date(invite.invited_at).toLocaleDateString('nl-NL')}
+                          </span>
+                        </div>
+                        <button onClick={() => confirmDeleteInvite(invite)} className="delete">×</button>
+                      </div>
+                    </div>
+                  )
+                })
+              ) : (
+                <div className="empty">
+                  <span>📧</span>
+                  <p>Nog niemand uitgenodigd</p>
+                </div>
+              )}
+
+              <h4 className="section-title">Actieve teamleden ({users.length})</h4>
               {users.length > 0 ? (
                 users.map(user => {
                   const userEntries = timeEntries.filter(e => e.user_id === user.id)
@@ -1425,7 +1551,7 @@ export default function Home() {
               ) : (
                 <div className="empty">
                   <span>👤</span>
-                  <p>Nog geen teamleden</p>
+                  <p>Nog geen teamleden ingelogd</p>
                 </div>
               )}
             </div>
@@ -2055,6 +2181,48 @@ export default function Home() {
           padding: 8px 12px;
           border-radius: 6px;
           cursor: pointer;
+        }
+        
+        .invite-card {
+          background: rgba(255,255,255,0.05);
+          border-radius: 12px;
+          border: 1px solid rgba(255,255,255,0.1);
+          margin-bottom: 12px;
+        }
+        .invite-info {
+          padding: 16px;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+        .invite-info strong { display: block; font-size: 15px; margin-bottom: 4px; }
+        .invite-info span { font-size: 12px; color: rgba(255,255,255,0.5); }
+        .invite-info .delete {
+          background: rgba(255,100,100,0.1);
+          border: none;
+          color: #ff6b6b;
+          padding: 8px 12px;
+          border-radius: 6px;
+          cursor: pointer;
+        }
+        
+        .error-msg {
+          background: rgba(255,100,100,0.1);
+          border: 1px solid rgba(255,100,100,0.3);
+          border-radius: 8px;
+          padding: 10px 14px;
+          color: #ff6b6b;
+          font-size: 13px;
+          margin-top: 12px;
+        }
+        .success-msg {
+          background: rgba(0,184,148,0.1);
+          border: 1px solid rgba(0,184,148,0.3);
+          border-radius: 8px;
+          padding: 10px 14px;
+          color: #00b894;
+          font-size: 13px;
+          margin-top: 12px;
         }
         
         .edit-form {

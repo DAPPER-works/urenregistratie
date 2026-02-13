@@ -307,6 +307,7 @@ export default function Home() {
 
   // Update page title with timer
   useEffect(() => {
+    if (typeof document === 'undefined') return
     if (myTimer && timerSeconds > 0) {
       const project = projects.find(p => p.id === selectedProject)
       const projectName = project?.name || 'Timer'
@@ -318,8 +319,11 @@ export default function Home() {
 
   // Play ping sound every 30 minutes
   const playPing = useCallback(() => {
+    if (typeof window === 'undefined') return
     try {
-      const audioContext = new (window.AudioContext || window.webkitAudioContext)()
+      const AudioContext = window.AudioContext || window.webkitAudioContext
+      if (!AudioContext) return
+      const audioContext = new AudioContext()
       const oscillator = audioContext.createOscillator()
       const gainNode = audioContext.createGain()
       

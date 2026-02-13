@@ -302,6 +302,9 @@ export default function Home() {
     return () => clearInterval(interval)
   }, [session, activeTimers])
 
+  // Define myTimer early so it can be used in useEffects
+  const myTimer = session ? activeTimers[session.user.id] : null
+
   // Update page title with timer
   useEffect(() => {
     if (myTimer && timerSeconds > 0) {
@@ -415,7 +418,6 @@ export default function Home() {
   }
 
   // Timer functions
-  const myTimer = session ? activeTimers[session.user.id] : null
 
   const startTimer = async () => {
     if (!session) return
